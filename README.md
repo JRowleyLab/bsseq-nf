@@ -18,12 +18,13 @@ Control_B,<path/to/read_1.fq.gz>,<path/to/read_2.fq.gz>
 
 4. Run the pipeline with the following code:
 
-`nextflow run main.nf -bg --plusmerge --outdir results`
+`nextflow run main.nf --samplesheet <samples.csv>`
 
 ## Parameters
 
-`--aligner`: `bwa-meth` OR `bismark`
-`--plusmerge`: Process all individual samples, AND combine replicates (eg. `Control_A`, `Control_B`).
-`--merge`: Combine replicates (eg. `Control_A`, `Control_B`).
-`--outdir`: Output directory
-`--index`: path to index [make sure it matches `--aligner`
+* `--aligner`: `bwa-meth` OR `bismark` [default: `bwa-meth`]
+* `--samplesheet`: Samplesheet csv containing `sample_id,fastq_1,fastq_2`.
+* `--plusmerge`: Process all individual samples, AND combine replicates (eg. `Control_A`, `Control_B`).
+* `--merge`: Combine replicates (eg. `Control_A`, `Control_B`).
+* `--outdir`: Output directory
+* `--index`: path to index [make sure it matches `--aligner`
