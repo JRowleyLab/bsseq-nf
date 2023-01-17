@@ -1,2 +1,29 @@
 # bsseq-nf
 A Nextflow pipeline for the end-to-end data processing of Bisulfite Sequencing (BS-seq) paired-end data. 
+
+
+## How to use
+
+1. Clone the repository: `git clone <repo.git>`
+2. Create a singularity image from the nf-core Docker container: `singularity pull bsseq.sif docker://nfcore/methylseq`
+3. Create a samplesheet csv (`samples.csv`) that contains `sample`, `read 1` and `read 2` information like below:
+
+**NOTE:** Use this exact format.
+
+```
+sample_id,fastq_1,fastq_2
+Control_A,<path/to/read_1.fq.gz>,<path/to/read_2.fq.gz>
+Control_B,<path/to/read_1.fq.gz>,<path/to/read_2.fq.gz>
+```
+
+4. Run the pipeline with the following code:
+
+`nextflow run main.nf -bg --plusmerge --outdir results`
+
+## Parameters
+
+`--aligner`: `bwa-meth` OR `bismark`
+`--plusmerge`: Process all individual samples, AND combine replicates (eg. `Control_A`, `Control_B`).
+`--merge`: Combine replicates (eg. `Control_A`, `Control_B`).
+`--outdir`: Output directory
+`--index`: path to index [make sure it matches `--aligner`
