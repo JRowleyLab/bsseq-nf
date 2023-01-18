@@ -19,6 +19,10 @@ Control_B,<path/to/read_1.fq.gz>,<path/to/read_2.fq.gz>
 
 `nextflow run main.nf --samplesheet <samples.csv>`
 
+## Replicates
+
+With the `--merge` and `--plusmerge` arguments, replicates are merged. This is done by using the sample name and replicate separated by "_". (eg. **Sample_Replicate** OR **Control_A**)
+
 ## Parameters
 
 * `--aligner`: `bwa-meth` OR `bismark` [default: `bwa-meth`]
