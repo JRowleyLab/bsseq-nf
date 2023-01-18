@@ -1,0 +1,5 @@
+sample_id,fastq_1,fastq_2
+Control_A,./data/Epi_Control_A_R1.2.5kreads.fastq.gz,./data/Epi_Control_A_R2.2.5kreads.fastq.gz
+Control_B,./data/Epi_Control_B_R1.2.5kreads.fastq.gz,./data/Epi_Control_B_R2.2.5kreads.fastq.gz
+E6_A,./data/Epi_E6A_R1.2.5kreads.fastq.gz,./data/Epi_E6A_R2.2.5kreads.fastq.gz
+E6_B,./data/Epi_Control_B_R1.2.5kreads.fastq.gz,./data/Epi_Control_B_R2.2.5kreads.fastq.gz

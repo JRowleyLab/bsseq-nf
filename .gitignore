@@ -1,0 +1,5 @@
+#nextflow 
+.nextflow
+
+#Non-test Samplesheets
+Samplesheets/samples_full.csv
