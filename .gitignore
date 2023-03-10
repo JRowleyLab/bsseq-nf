@@ -1,9 +1,12 @@
 #nextflow 
 .nextflow*
 
-#Non-test Samplesheets
-Samplesheets/samples_full.csv
+#Samplesheets
+Samplesheets
 
 #ignore work directory
 work
+
+#ignore results directory
+results
 

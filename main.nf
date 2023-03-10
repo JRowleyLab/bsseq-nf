@@ -2,14 +2,12 @@
  * pipeline input parameters 
  */
 
-params.genome = "${baseDir}/../Indexes/bwaIndex/hg38.fa" 
+params.genome = "/Zulu/bnolan/Indexes/bwaIndex/hg38.fa" 
 params.samplesheet = "${baseDir}/Samplesheets/samples_test.csv"
 params.outdir = "${baseDir}/results"
-params.index = "${baseDir}/../Indexes/bwaIndex/"
-params.threads = "2"
+params.index = "/Zulu/bnolan/Indexes/bwaIndex/"
+params.threads = "4"
 params.aligner = "bwa-meth"
-params.merge = ""  //merge replicates
-params.plusmerge = "" //merge replicates but also calculate methylation/duplicates for individual replicates
 
 
 log.info """\
@@ -35,7 +33,62 @@ Channel
         .from ( file(params.samplesheet) )
         .splitCsv(header:true, sep:',')
         .map { row -> [ row.sample_id, [ file(row.fastq_1, checkIfExists: true), file(row.fastq_2, checkIfExists: true) ]] }
-        .into { read_pairs_ch; read_pairs_ch2 }
+        .set { read_pairs_ch }
+
+        
+index_ch = Channel.value(file(params.index))
+
+genome_ch = Channel.value(file(params.genome)) 
+
+
+// // Concatenate reads of same sample [e.g. additional lanes, resequencing of old samples]
+//nfcore
+read_pairs_ch
+        .groupTuple()
+        .branch {
+            meta, fastq ->
+                single  : fastq.size() == 1
+                    return [ meta, fastq.flatten() ]
+                multiple: fastq.size() > 1
+                    return [ meta, fastq.flatten() ]
+        }
+        .set { ch_fastq }  
+
+
+process CAT_FASTQ {
+    //nf-core
+    tag "$sample_id"
+    publishDir "${params.outdir}/fastqMerged", mode: 'copy'
+
+    input:
+    tuple val(sample_id), path(reads, stageAs: "input*/*") from ch_fastq.multiple
+
+    output:
+    tuple val(sample_id), path("*.merged.fastq.gz") into cat_out_ch
+
+
+    script:
+    def readList = reads instanceof List ? reads.collect{ it.toString() } : [reads.toString()]
+
+     if (readList.size >= 2) {
+        def read1 = []
+        def read2 = []
+        readList.eachWithIndex{ v, ix -> ( ix & 1 ? read2 : read1 ) << v }
+
+        """
+        cat ${read1.join(' ')} > ${sample_id}_1.merged.fastq.gz
+        cat ${read2.join(' ')} > ${sample_id}_2.merged.fastq.gz
+        """  
+     }
+}
+
+
+//mix merged reads with singles
+cat_out_ch
+        .mix(ch_fastq.single)
+        .into { cat_merged_ch; cat_merged_ch2 }
+
+
 
 //  Run fastQC to check quality of reads files
 
@@ -44,7 +97,7 @@ process fastqc {
     publishDir "${params.outdir}/fastqc", pattern:"{*.html,fastqc_${sample_id}_logs}", mode: 'copy'
 
     input:
-    tuple val(sample_id), path(reads) from read_pairs_ch
+    tuple val(sample_id), path(reads) from cat_merged_ch
 
     output:
     path("fastqc_${sample_id}_logs") into fastqc_ch
@@ -57,68 +110,14 @@ process fastqc {
 }
 
 
-// Download hg38 if no reference is given AND no index is given
-
-process download_ref {
-
-	publishDir "${params.outdir}/reference", pattern: "*.fa", mode:'copy'
-
-	output:
-	file("*.fa") into ref_ch
-
-    when: !params.genome & !params.index
-
-	script:
-	"""
-	wget --no-check-certificate http://ftp.ensembl.org/pub/release-104/fasta/homo_sapiens/dna/Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz
-	gunzip Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz
-	mv Homo_sapiens.GRCh38.dna.primary_assembly.fa GRCh38_ensembl.dna.fa
-	"""
-}
-
-genome_ch = params.genome ? Channel.value(file(params.genome)) : ref_ch
-
-// Create index for bismark if none given
-// NOT FUNCTIONAL, the output path doesn't pick up the index
-
-process index {
-
-    publishDir "${params.outdir}/${params.aligner}/index", mode: 'copy'
-    
-    input:
-    path genome from genome_ch
-
-    when:
-    !params.index
-     
-    output:
-    path 'index' 
-    path 'bwameth' into index_out_ch
-
-    script:       
-    if( params.aligner == 'bismark' ) 
-        """
-        bismark_genome_preparation . $genome 
-        """
-    else if ( params.aligner == 'bwa-meth')
-        """
-        bwameth.py index $genome
-        """
-}
-
-
-index_ch = params.index ? Channel.value(file(params.index)) : index_out_ch
-
-
-
 // Trimming reads with Trim Galore
 
 process trimming {
-
+    tag "$key"
     publishDir "${params.outdir}/trimmed", pattern: "*.fq.gz", mode: 'copy'
 
     input: 
-    tuple val(key), path(reads) from read_pairs_ch2
+    tuple val(key), path(reads) from cat_merged_ch2
 
     output:
     //tuple path(fq_1_paired), path(fq_2_paired) into ch_out_trimmomatic
@@ -160,6 +159,7 @@ process fastqc_trimmed {
 }
 
 
+
 // Align reads to index with Bismark or bwa-meth
 
 process align {
@@ -191,7 +191,6 @@ process align {
         # courtesy of nf-core
         #touch -c -- *
 
-
         bwameth.py \\
                 -t $params.threads \\
                 --reference \$INDEX \\
@@ -200,110 +199,6 @@ process align {
         """   
 }
 
-// Merge bam files in a sample 'eg. CONTROL' into a single bam file
-// Split bam tuple into groups of sample
-if ( params.merge || params.plusmerge) { // 
-
-    // samtools sort bam files, ready for combining replicates (--merge)
-    process samtools_sort {
-        tag "$key"
-        publishDir "${params.outdir}/${params.aligner}/samtools/", pattern:'*', mode: 'copy'
-
-        input:
-        tuple val(key), path(bam) from bam_ch
-        
-        output:
-        tuple val(key), path('*sort.bam') into bam_sorted_key_ch
-
-        
-        script:
-        """
-        samtools sort $bam > ${key}.sort.bam
-        """
-    }
-
-
-    // TODO: Optimize to move forward with a sample when all replicates have arrived. 
-    // Doesn't wait for files to arrive, channel is set as soon as one enters, the channel is then group + all individualss
-    // Perhaps using groupKey()
-    // bam_sorted_key_ch 
-    //                 .map { group_rep, bam ->
-    //                                         def(group) = group_rep.split("_")  
-    //                                         tuple( group, bam )
-    //                                         }
-    //                 .groupTuple()
-    //                 .set{bam_sorted_groups_ch}
-
-
-    // Setting groupKey() so that the channel waits for all of a sample to arrive before moving on with the merge
-    bam_sorted_key_ch
-        .map { group_rep, bam ->
-                            def(group) = group_rep.split("_")  
-                            tuple( group, bam )
-                            }
-        .groupTuple()
-        .map {
-            group, bams -> 
-                        tuple( groupKey(group, bams.size()), bams)
-        }
-        .set{bam_sorted_groups_ch}
-
-//bam_sorted_groups_ch.view()
-
-
-
-    // Combine replicates based on 'sample_rep' format, all 'sample' bam files will be merged
-    process combine_replicates {
-        tag "$group"
-        publishDir "${params.outdir}/${params.aligner}/samtools/merge/${group}/", pattern:'*', mode: 'copy'
-
-        input:
-        tuple val(group), path(bams) from bam_sorted_groups_ch
-
-        output:
-        tuple val(group), file("*.merged.bam") into bam_merged_groups_ch
-
-        script:
-        """
-        samtools merge -n ${group}.merged.bam $bams 
-        """
-    }
-  
-}
-
-// Output bam channels into single channel
-if(params.merge){
-    bam_merged_groups_ch.into{ bam_channel; bam_channel2 }
-}else if(params.plusmerge){
-    bam_merged_groups_ch.mix(bam_ch2).into{ bam_channel; bam_channel2 }
-}else{
-    bam_ch2.into{ bam_channel; bam_channel2 }
-} 
-
-
-// samtools index merged (--merge) bam files for MethylExtract
-process samtools_sort_index {
-    tag "$key"
-    publishDir "${params.outdir}/${params.aligner}/samtools/bam/${key}/", pattern:'*', mode: 'copy'
-
-    input:
-    tuple val(key), path(bam) from bam_channel
-    
-    output:
-    tuple val(key), path('*sort.bam') into bam_sorted_channel, bam_sorted_channel2, bam_sorted_channel3
-    tuple val(key), path('*bai') into bam_sorted_indexed_channel
-
-    when:
-    params.aligner == 'bwa-meth'
-
-    script:
-    """
-    samtools sort $bam > ${key}.sort.bam
-
-    samtools index ${key}.sort.bam 
-    """
-} 
-
 
 // Samtools stats for summary statistics on bwa-meth alignment
 process samtools_stat_flagstat {
@@ -311,7 +206,7 @@ process samtools_stat_flagstat {
     publishDir "${params.outdir}/${params.aligner}/samtools/stats/", pattern:'*', mode: 'copy'
 
     input:
-    tuple val(key), path(bam) from bam_sorted_channel
+    tuple val(key), path(bam) from bam_ch
 
     when:
     params.aligner == 'bwa-meth'
@@ -336,22 +231,23 @@ process samtools_stat_flagstat {
 }
 
 
-process samtools_sortn {
+//deduplication
+//sort
+process samtools_sort {
         tag "$key"
         publishDir "${params.outdir}/${params.aligner}/samtools/", pattern:'*', mode: 'copy'
 
         input:
-        tuple val(key), path(bam) from bam_channel2
+        tuple val(key), path(bam) from bam_ch2
         
         output:
-        tuple val(key), path('*sortn.bam') into bam_sortn_channel
-
-        when:
-        params.aligner == 'bismark'
+        tuple val(key), path('*sorted.bam') into bam_sorted_ch
+        tuple val(key), path('*sortn.bam') into bam_sortn_ch
         
         script:
         """
         samtools sort -n $bam > ${key}.sortn.bam
+        samtools sort $bam > ${key}.sorted.bam
         """
     }
 
@@ -362,7 +258,7 @@ process deduplication_bismark {
     publishDir "${params.outdir}/${params.aligner}/deduplicate/$key", pattern:"*", mode: 'copy'
 
     input:
-    tuple val(key), path(bam) from bam_sortn_channel
+    tuple val(key), path(bam) from bam_sortn_ch
 
     when:
     params.aligner == 'bismark'
@@ -379,15 +275,14 @@ process deduplication_bismark {
 
 
 
-// Deduplicate bam files with picard
-
+// Deduplicate bam files with picard [bwa-meth]
 process deduplication_picard{
     tag "$key"
     publishDir "${params.outdir}/${params.aligner}/picard/$key", pattern:"*", mode: 'copy'
 
     input:
-    tuple val(key), path(bam) from bam_sorted_channel3 
-    path(genome) from params.genome
+    tuple val(key), path(bam) from bam_sorted_ch 
+    path(genome) from genome_ch
 
     when:
     params.aligner == 'bwa-meth'
@@ -409,14 +304,91 @@ process deduplication_picard{
     """
 }
 
+
 if ( params.aligner == 'bismark'){
-    dedup_bam_bismark_ch.into{ dedup_bam_ch; dedup_bam_ch2 }
+    dedup_bam_bismark_ch
+                    .into{ dedup_bam_ch; dedup_bam_ch2 }
     dedup_report_ch = dedup_report_bismark_ch
 }else{
-    dedup_bam_picard_ch.into{ dedup_bam_ch; dedup_bam_ch2 }
+    dedup_bam_picard_ch
+                    .into{ dedup_bam_ch; dedup_bam_ch2 }
     dedup_report_ch = dedup_report_picard_ch
 } 
+
+
+//Combine replicates: split by '_', and group all samples
+dedup_bam_ch
+    .map { group_rep, bam ->
+                        def(group) = group_rep.split("_")  
+                        tuple( group, bam )
+                        }
+    .groupTuple()
+    .set { dedup_groupsplit_ch }
+
+// Keep groups with more than 1 replicate, ready for combine replicates
+dedup_groupsplit_ch
+        .map {
+            group, bams -> 
+                        if (bams.size() != 1){ //Only keep 'groups' with >1 replicate
+                            tuple( groupKey(group, bams.size()), bams)
+                        }
+        }
+        .set{bam_sorted_groups_ch}
+
+
+
+
+// Combine replicates based on 'sample_rep' format, all 'sample' bam files will be merged
+process combine_replicates {
+    tag "$group"
+    publishDir "${params.outdir}/${params.aligner}/samtools/merge/${group}/", pattern:'*', mode: 'copy'
+
+    input:
+    tuple val(group), path(bams) from bam_sorted_groups_ch
+
+    output:
+    tuple val(group), file("*.merged.bam") into bam_merged_groups_ch
+
+    script:
+    """
+    samtools merge -n ${group}.merged.bam $bams 
+    """
+}
+  
+
+// Output bam channels into single channel
+bam_merged_groups_ch
+                .mix(dedup_bam_ch2)
+                .into{ dedup_bam_merged_ch; dedup_bam_merged_ch2 }
+
+
+// samtools index bam files for MethylExtract
+process samtools_sort_index {
+    tag "$key"
+    publishDir "${params.outdir}/${params.aligner}/samtools/bam/${key}/", pattern:'*', mode: 'copy'
+
+    input:
+    tuple val(key), path(bam) from dedup_bam_merged_ch
     
+    output:
+    tuple val(key), path('*sort.bam') into bam_merged_sorted_ch
+    tuple val(key), path('*bai') into bam_merged_indexed_ch
+
+    when:
+    params.aligner == 'bwa-meth'
+
+    script:
+    """
+    samtools sort $bam > ${key}.sort.bam
+
+    samtools index ${key}.sort.bam 
+    """
+} 
+
+bam_merged_sorted_ch
+            .join(bam_merged_indexed_ch)
+            .set{bam_sorted_indexed_ch}
+
 
 // Extract methylation information from Bismark bam files
 
@@ -425,7 +397,7 @@ process methylation_extractor {
     publishDir "${params.outdir}/bismark/methylation/$key", pattern:'*', mode: 'copy'
 
     input:
-    tuple val(key), path(bam) from dedup_bam_ch
+    tuple val(key), path(bam) from dedup_bam_merged_ch2
 
     when:
     params.aligner == 'bismark'
@@ -459,7 +431,7 @@ process methyldackel {
     publishDir "${params.outdir}/${params.aligner}/MethylDackel/$key", pattern:'*', mode: 'copy'
 
     input:
-    tuple val(key), path(bam) from dedup_bam_ch2
+    tuple val(key), path(bam), path(bai) from bam_sorted_indexed_ch
     path(genome) from params.genome
 
     output:
